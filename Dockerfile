@@ -4,21 +4,11 @@ ARG NGINX_VERSION=1.23.3
 # https://hg.nginx.org/nginx-quic/shortlog/quic
 ARG NGINX_COMMIT=91ad1abfb285
 
-# https://github.com/google/ngx_brotli
-ARG NGX_BROTLI_COMMIT=6e975bcb015f62e1f303054897783355e2a877dc
-
 # https://github.com/google/boringssl
-ARG BORINGSSL_COMMIT=8ce0e1c14e48109773f1e94e5f8b020aa1e24dc5
+ARG BORINGSSL_COMMIT=028bae7ddc67b6061d80c17b0be4e2f60d94731b
 
 # http://hg.nginx.org/njs
-ARG NJS_COMMIT=b33aae5e8dc6
-
-# https://github.com/openresty/headers-more-nginx-module#installation
-# we want to have https://github.com/openresty/headers-more-nginx-module/commit/e536bc595d8b490dbc9cf5999ec48fca3f488632
-ARG HEADERS_MORE_VERSION=0.34
-
-# https://github.com/leev/ngx_http_geoip2_module/releases
-ARG GEOIP2_VERSION=3.4
+ARG NJS_VERSION=0.7.10
 
 # https://hg.nginx.org/nginx-quic/file/quic/README#l72
 ARG CONFIG="\
@@ -52,15 +42,11 @@ ARG CONFIG="\
 		--with-http_stub_status_module \
 		--with-http_auth_request_module \
 		--with-http_xslt_module=dynamic \
-		--with-http_image_filter_module=dynamic \
-		--with-http_geoip_module=dynamic \
-		--with-http_perl_module=dynamic \
 		--with-threads \
 		--with-stream \
 		--with-stream_ssl_module \
 		--with-stream_ssl_preread_module \
 		--with-stream_realip_module \
-		--with-stream_geoip_module=dynamic \
 		--with-http_slice_module \
 		--with-mail \
 		--with-mail_ssl_module \
@@ -68,115 +54,84 @@ ARG CONFIG="\
 		--with-file-aio \
 		--with-http_v2_module \
 		--with-http_v3_module \
-		--add-module=/usr/src/ngx_brotli \
-		--add-module=/usr/src/headers-more-nginx-module-$HEADERS_MORE_VERSION \
-		--add-module=/usr/src/njs/nginx \
-		--add-dynamic-module=/usr/src/ngx_http_geoip2_module \
+		--add-module=/usr/src/njs-$NJS_VERSION/nginx \
 	"
 
-FROM alpine:3.16 AS base
+FROM ubuntu:22.04 AS base
 
 ARG NGINX_VERSION
 ARG NGINX_COMMIT
-ARG NGX_BROTLI_COMMIT
-ARG HEADERS_MORE_VERSION
-ARG NJS_COMMIT
-ARG GEOIP2_VERSION
+ARG BORINGSSL_COMMIT
+ARG NJS_VERSION
 ARG CONFIG
 
+RUN apt update
+
 RUN \
-	apk add --no-cache --virtual .build-deps \
+	apt install --no-install-recommends -y \
+		curl \
+		ca-certificates \
 		gcc \
 		libc-dev \
 		make \
+		golang \
 		musl-dev \
-		go \
-		ninja \
-		mercurial \
-		openssl-dev \
-		pcre-dev \
-		zlib-dev \
-		linux-headers \
+		ninja-build \
+		libssl-dev \
+		libpcre3-dev \
+		zlib1g-dev \
 		gnupg \
 		libxslt-dev \
-		gd-dev \
-		geoip-dev \
-		perl-dev \
-	&& apk add --no-cache --virtual .brotli-build-deps \
+		\
 		autoconf \
 		libtool \
 		automake \
-		git \
 		g++ \
 		cmake \
-	&& apk add --no-cache --virtual .geoip2-build-deps \
-		libmaxminddb-dev \
-	&& apk add --no-cache --virtual .njs-build-deps \
-		readline-dev
+		\
+		libreadline-dev
 
 WORKDIR /usr/src/
 
 RUN \
 	echo "Cloning nginx $NGINX_VERSION (rev $NGINX_COMMIT from 'quic' branch) ..." \
-	&& hg clone -b quic --rev $NGINX_COMMIT https://hg.nginx.org/nginx-quic /usr/src/nginx-$NGINX_VERSION
-
-RUN \
-	echo "Cloning brotli $NGX_BROTLI_COMMIT ..." \
-	&& mkdir /usr/src/ngx_brotli \
-	&& cd /usr/src/ngx_brotli \
-	&& git init \
-	&& git remote add origin https://github.com/google/ngx_brotli.git \
-	&& git fetch --depth 1 origin $NGX_BROTLI_COMMIT \
-	&& git checkout --recurse-submodules -q FETCH_HEAD \
-	&& git submodule update --init --depth 1
+	&& curl -L https://hg.nginx.org/nginx-quic/archive/$NGINX_COMMIT.tar.gz > nginx-quic.tar.gz \
+	&& tar zxvf nginx-quic.tar.gz --directory /usr/src/
 
 # hadolint ignore=SC2086
 RUN \
-  echo "Cloning boringssl ..." \
-  && cd /usr/src \
-  && git clone https://github.com/google/boringssl \
-  && cd boringssl \
-  && git checkout $BORINGSSL_COMMIT
+	echo "Cloning boringssl ..." \
+	&& curl -L https://github.com/google/boringssl/archive/$BORINGSSL_COMMIT.tar.gz > boringssl.tar.gz \
+	&& echo https://github.com/google/boringssl/archive/$BORINGSSL_COMMIT.tar.gz \
+	&& tar zxvf boringssl.tar.gz --directory /usr/src/ \
+	&& echo "Building boringssl ..." \
+	&& cd /usr/src/boringssl-$BORINGSSL_COMMIT \
+	&& mkdir build \
+	&& cd build \
+	&& cmake -GNinja .. \
+	&& ninja
 
 RUN \
-  echo "Building boringssl ..." \
-  && cd /usr/src/boringssl \
-  && mkdir build \
-  && cd build \
-  && cmake -GNinja .. \
-  && ninja
+	echo "Cloning and configuring njs ..." \
+	&& curl -L http://hg.nginx.org/njs/archive/$NJS_VERSION.tar.gz > nginx-njs.tar.gz \
+	&& tar zxvf nginx-njs.tar.gz --directory /usr/src/ \
+	&& cd /usr/src/njs-$NJS_VERSION \
+	&& ./configure \
+	&& make njs \
+	&& mv /usr/src/njs-$NJS_VERSION/build/njs /usr/sbin/njs \
+	&& echo "njs v$(njs -v)"
 
 RUN \
-  echo "Downloading headers-more-nginx-module ..." \
-  && cd /usr/src \
-  && wget -q https://github.com/openresty/headers-more-nginx-module/archive/refs/tags/v${HEADERS_MORE_VERSION}.tar.gz -O headers-more-nginx-module.tar.gz \
-  && tar -xf headers-more-nginx-module.tar.gz
-
-RUN \
-  echo "Downloading ngx_http_geoip2_module ..." \
-  && git clone --depth 1 --branch ${GEOIP2_VERSION} https://github.com/leev/ngx_http_geoip2_module /usr/src/ngx_http_geoip2_module
-
-RUN \
-  echo "Cloning and configuring njs ..." \
-  && cd /usr/src \
-  && hg clone --rev ${NJS_COMMIT} http://hg.nginx.org/njs \
-  && cd /usr/src/njs \
-  && ./configure \
-  && make njs \
-  && mv /usr/src/njs/build/njs /usr/sbin/njs \
-  && echo "njs v$(njs -v)"
-
-RUN \
-  echo "Building nginx ..." \
-	&& cd /usr/src/nginx-$NGINX_VERSION \
+	echo "Building nginx ..." \
+	&& cd /usr/src/nginx-quic-$NGINX_COMMIT \
 	&& ./auto/configure $CONFIG \
-      --with-cc-opt="-I../boringssl/include"   \
-      --with-ld-opt="-L../boringssl/build/ssl  \
-                     -L../boringssl/build/crypto" \
+		--with-cc-opt="-I../boringssl-$BORINGSSL_COMMIT/include" \
+		--with-ld-opt="-L../boringssl-$BORINGSSL_COMMIT/build/ssl \
+		-L../boringssl-$BORINGSSL_COMMIT/build/crypto" \
 	&& make -j"$(getconf _NPROCESSORS_ONLN)"
 
 RUN \
-	cd /usr/src/nginx-$NGINX_VERSION \
+	cd /usr/src/nginx-quic-$NGINX_COMMIT \
 	&& make install \
 	&& rm -rf /etc/nginx/html/ \
 	&& mkdir /etc/nginx/conf.d/ \
@@ -185,21 +140,21 @@ RUN \
 	\
 	# https://tools.ietf.org/html/rfc7919
 	# https://github.com/mozilla/ssl-config-generator/blob/master/docs/ffdhe2048.txt
-	&& wget -q https://ssl-config.mozilla.org/ffdhe2048.txt -O /etc/ssl/dhparam.pem \
+	&& curl -L https://ssl-config.mozilla.org/ffdhe2048.txt > /etc/ssl/dhparam.pem \
 	\
 	# Bring in gettext so we can get `envsubst`, then throw
 	# the rest away. To do this, we need to install `gettext`
 	# then move `envsubst` out of the way so `gettext` can
 	# be deleted completely, then move `envsubst` back.
-	&& apk add --no-cache --virtual .gettext gettext \
+	&& apt install --no-install-recommends -y gettext \
 	\
-	&& scanelf --needed --nobanner /usr/sbin/nginx /usr/sbin/njs /usr/lib/nginx/modules/*.so /usr/bin/envsubst \
-			| awk '{ gsub(/,/, "\nso:", $2); print "so:" $2 }' \
-			| sort -u \
-			| xargs -r apk info --installed \
-			| sort -u > /tmp/runDeps.txt
+	&& readelf -d /usr/sbin/nginx /usr/sbin/njs /usr/lib/nginx/modules/*.so /usr/bin/envsubst | awk '/NEEDED/{ gsub(/(\[|\])/, ""); print $(NF)}' \
+		| while read n; do dpkg-query -S $n 2>/dev/null; done \
+		| sed 's/^\([^:]\+\):.*$/\1/' \
+		| uniq \
+		| sort -u > /tmp/runDeps.txt
 
-FROM alpine:3.16
+FROM ubuntu:22.04
 ARG NGINX_VERSION
 ARG NGINX_COMMIT
 
@@ -210,17 +165,15 @@ COPY --from=base /tmp/runDeps.txt /tmp/runDeps.txt
 COPY --from=base /etc/nginx /etc/nginx
 COPY --from=base /usr/lib/nginx/modules/*.so /usr/lib/nginx/modules/
 COPY --from=base /usr/sbin/nginx /usr/sbin/
-COPY --from=base /usr/local/lib/perl5/site_perl /usr/local/lib/perl5/site_perl
 COPY --from=base /usr/bin/envsubst /usr/local/bin/envsubst
 COPY --from=base /etc/ssl/dhparam.pem /etc/ssl/dhparam.pem
-
 COPY --from=base /usr/sbin/njs /usr/sbin/njs
 
 # hadolint ignore=SC2046
 RUN \
-	addgroup --gid 101 -S nginx \
-	&& adduser --uid 100 -D -S -h /var/cache/nginx -s /sbin/nologin -G nginx nginx \
-	&& apk add --no-cache --virtual .nginx-rundeps tzdata $(cat /tmp/runDeps.txt) \
+	&& addgroup --gid 1001 --system nginx \
+	&& adduser --uid 1000 --disabled-password --system --home /var/cache/nginx --shell /sbin/nologin --ingroup nginx nginx \
+	&& apt update && apt install --no-install-recommends -y tzdata $(cat /tmp/runDeps.txt) \
 	&& rm /tmp/runDeps.txt \
 	&& ln -s /usr/lib/nginx/modules /etc/nginx/modules \
 	# forward request and error logs to docker log collector
